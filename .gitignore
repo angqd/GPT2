@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+# downloaded / tokenized datasets and checkpoints
+edu_fineweb10B/
+hellaswag/
+log/
+*.bin
+*.npy
+*.pt
+.DS_Store
