@@ -89,6 +89,23 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd,config.vocab_size,bias=False)
 
+    def forward(self,idx):
+        # idx is shape (B,T)
+        B,T = idx.size()
+        assert T <= self.config.block_size
+        # forward pos and token embeddings 
+        pos = torch.arange(0,T,dtype=torch.long,device=idx.device)
+        pos_emb = self.transformer.wpe(pos)
+        tok_emb = self.transformer.wte(idx)
+        x = tok_emb + pos_emb
+        # forward the blocks of the tranformer 
+        for block in self.transformer.h:
+            x = block(x)
+        # forward the final layernorm and the classifier 
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x) 
+        return logits
+
     @classmethod
     def from_pretrained(cls, model_type):
         """Loads pretrained GPT-2 model weights from huggingface"""
@@ -134,3 +151,49 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
 
         return model
+
+
+
+################### SAMPLING 
+num_return_sequences = 5
+max_length = 30
+
+model = GPT.from_pretrained('gpt2')
+model.eval()
+model.to('mps')
+
+# prefix tokens 
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')
+input_seq = input("Input sequence: ")
+tokens = enc.encode(input_seq)
+tokens = torch.tensor(tokens,dtype=torch.long) # (8,)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences,1) # (5,8)
+x = tokens.to('mps')
+
+# generate 
+torch.manual_seed(42)
+torch.mps.manual_seed(42)
+# with each loop iteration we append one more col into X so we append a token onto it 
+while x.size(1) <max_length:
+    # forward model to get logits 
+    with torch.no_grad():
+        logits = model(x) # B,T,vocab_size
+        logits = logits[:,-1,:] # take logits from last postions , (B,vocab_size)
+        # we just want to take the last col logits 
+        probs = F.softmax(logits,dim=-1)
+        # do top k sampling of 50 
+        # top k probs becomes (5,50) 
+        topk_probs,topk_indices = torch.topk(probs,50,dim=-1)
+        # select a token and a, gather corresponding indice and atttatch to sequence 
+        ix = torch.multinomial(topk_probs,1) 
+        # their indixes 
+        xcol = torch.gather(topk_indices,-1,ix)
+        # append 
+        x = torch.cat((x,xcol),dim=1)
+
+
+for i in range(num_return_sequences):
+    tokens = x[i,:max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(">",decoded)
