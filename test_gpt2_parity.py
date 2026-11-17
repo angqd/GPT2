@@ -1,4 +1,4 @@
-"""Parity tests: hand-written GPT (train_gpt2.py) vs Hugging Face GPT2LMHeadModel('gpt2').
+"""Parity tests: hand-written GPT (gpt2.py) vs Hugging Face GPT2LMHeadModel('gpt2').
 Run with `pytest test_gpt2_parity.py` or `python test_gpt2_parity.py [--debug]`.
 Only reports divergences; never modifies the model code."""
 import sys, pathlib
@@ -14,11 +14,11 @@ TEXT = ("The quick brown fox jumps over the lazy dog. In a hole in the ground th
 
 @lru_cache(None)
 def models():
-    # train_gpt2.py runs sampling code (input(), mps) at import time, so exec only the
+    # gpt2.py also holds the CLI generator below the SAMPLING marker, so exec only the
     # class definitions that come before the SAMPLING marker instead of importing it.
-    src = pathlib.Path(__file__).with_name("train_gpt2.py").read_text()
-    ns = {"__name__": "train_gpt2_defs"}
-    exec(compile(src.split("################### SAMPLING")[0], "train_gpt2.py", "exec"), ns)
+    src = pathlib.Path(__file__).with_name("gpt2.py").read_text()
+    ns = {"__name__": "gpt2_defs"}
+    exec(compile(src.split("################### SAMPLING")[0], "gpt2.py", "exec"), ns)
     from transformers import GPT2LMHeadModel
     mine = ns["GPT"].from_pretrained("gpt2").eval().float()
     hf = GPT2LMHeadModel.from_pretrained("gpt2", attn_implementation="eager").eval().float()
