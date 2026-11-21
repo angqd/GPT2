@@ -1,0 +1,70 @@
+{
+  "info": {
+    "label": "kv_greedy",
+    "date": "2026-11-21 17:37",
+    "torch": "2.15.0",
+    "machine": "arm64",
+    "prompt": "Hello, I'm a language model,",
+    "runs_per_case": 3,
+    "case_set": "kv",
+    "commit": "a7b13c8",
+    "n_params": 124439808,
+    "tied": true
+  },
+  "results": {
+    "greedy_uncached_60": {
+      "tokens_per_s": 45.89,
+      "ms_per_token": 21.79,
+      "ttft_ms": 14.96,
+      "later_mean_ms": 21.63,
+      "weights_mb": 523.46,
+      "peak_mb": 549.21,
+      "new_tokens": 60
+    },
+    "greedy_cached_60": {
+      "tokens_per_s": 89.84,
+      "ms_per_token": 11.13,
+      "ttft_ms": 13.27,
+      "later_mean_ms": 10.83,
+      "weights_mb": 523.46,
+      "peak_mb": 528.56,
+      "new_tokens": 60
+    },
+    "greedy_uncached_200": {
+      "tokens_per_s": 30.75,
+      "ms_per_token": 32.52,
+      "ttft_ms": 13.25,
+      "later_mean_ms": 32.33,
+      "weights_mb": 523.46,
+      "peak_mb": 603.47,
+      "new_tokens": 200
+    },
+    "greedy_cached_200": {
+      "tokens_per_s": 81.35,
+      "ms_per_token": 12.29,
+      "ttft_ms": 13.36,
+      "later_mean_ms": 12.0,
+      "weights_mb": 523.46,
+      "peak_mb": 538.4,
+      "new_tokens": 200
+    },
+    "greedy_uncached_800": {
+      "tokens_per_s": 3.18,
+      "ms_per_token": 314.9,
+      "ttft_ms": 21.0,
+      "later_mean_ms": 314.61,
+      "weights_mb": 523.46,
+      "peak_mb": 835.47,
+      "new_tokens": 800
+    },
+    "greedy_cached_800": {
+      "tokens_per_s": 63.34,
+      "ms_per_token": 15.79,
+      "ttft_ms": 15.53,
+      "later_mean_ms": 15.44,
+      "weights_mb": 523.46,
+      "peak_mb": 586.26,
+      "new_tokens": 800
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "info": {
+    "label": "tied",
+    "date": "2026-11-20 14:16",
+    "torch": "2.15.0",
+    "machine": "arm64",
+    "prompt": "Hello, I'm a language model,",
+    "runs_per_case": 5,
+    "commit": "a7b13c8",
+    "n_params": 124439808,
+    "tied": true
+  },
+  "results": {
+    "greedy": {
+      "tokens_per_s": 47.86,
+      "ms_per_token": 20.89,
+      "ttft_ms": 13.19,
+      "later_mean_ms": 20.71,
+      "weights_mb": 523.46,
+      "peak_mb": 536.46,
+      "new_tokens": 60
+    },
+    "beam4": {
+      "tokens_per_s": 30.21,
+      "ms_per_token": 33.1,
+      "ttft_ms": 20.03,
+      "later_mean_ms": 30.93,
+      "weights_mb": 523.46,
+      "peak_mb": 562.0,
+      "new_tokens": 40
+    },
+    "top_k": {
+      "tokens_per_s": 47.3,
+      "ms_per_token": 21.14,
+      "ttft_ms": 13.1,
+      "later_mean_ms": 20.69,
+      "weights_mb": 523.46,
+      "peak_mb": 536.66,
+      "new_tokens": 60
+    },
+    "top_p": {
+      "tokens_per_s": 45.4,
+      "ms_per_token": 22.02,
+      "ttft_ms": 14.03,
+      "later_mean_ms": 21.37,
+      "weights_mb": 523.46,
+      "peak_mb": 537.42,
+      "new_tokens": 60
+    }
+  }
+}

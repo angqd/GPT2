@@ -2,7 +2,40 @@ from dataclasses import dataclass
 import torch 
 import torch.nn as nn 
 from torch.nn import functional as F 
-import math 
+import math
+
+class LayerKVCache:
+    """Keys and values of ONE attention layer. Each is (B, n_head, T_so_far, head_size); starts empty."""
+    def __init__(self):
+        self.k = None
+        self.v = None
+
+    def seq_len(self):
+        return 0 if self.k is None else self.k.size(2)
+
+    def update(self, k, v):
+        """k, v: this step's NEW keys/values, (B, n_head, T_new, head_size).
+        Store them after the old ones, and return the FULL k, v (old + new) for attention to use."""
+        if(self.seq_len()==0):
+            # cache empty case
+            self.k = k
+            self.v = v 
+        # general case where cache is not empty 
+        # k (B,n_head,T-sorfar,head_size) 
+        # but each k_i that is in the time step needs to be concatted over the time dim 
+        else:
+            self.k = torch.cat([self.k,k],dim=2)
+            self.v = torch.cat([self.v,v],dim=2)
+            # return full k and v 
+        return self.k,self.v
+
+class KVCache:
+    """One LayerKVCache per transformer block."""
+    def __init__(self, n_layer):
+        self.layers = [LayerKVCache() for _ in range(n_layer)]
+
+    def seq_len(self):
+        return self.layers[0].seq_len()    # every layer holds the same number of tokens
 
 class CausalSelfAttention(nn.Module):
     ## multi head attention 
@@ -21,17 +54,25 @@ class CausalSelfAttention(nn.Module):
         self.register_buffer("bias",torch.tril(torch.ones(config.block_size,config.block_size))
                              .view(1,1,config.block_size,config.block_size))
 
-    def forward(self,x):
-        B,T,C = x.size() # batch size , sequence length , embedding dimensionality 
+    def forward(self,x,layer_cache=None):
+        B,T,C = x.size() # batch size , sequence length , embedding dimensionality
         # C is number of channels  nh : num heads , hs : head size , C = hs * nh 
         qkv = self.c_attn(x)
         q,k,v = qkv.split(self.n_embd,dim=2)
         k = k.view(B,T,self.n_head,C // self.n_head).transpose(1,2)
         q = q.view(B,T,self.n_head,C // self.n_head).transpose(1,2)
         v = v.view(B,T,self.n_head,C // self.n_head).transpose(1,2)
-        # attention 
-        att = (q @ k.transpose(-2,-1)) * (1.0/math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T]==0,float('-inf'))
+        # kv cache: k and v become the FULL history (past + new tokens); q stays the new tokens only
+        T_past = 0
+        if layer_cache is not None:
+            T_past = layer_cache.seq_len()       # read BEFORE update, update changes it
+            k, v = layer_cache.update(k, v)
+        # attention
+        att = (q @ k.transpose(-2,-1)) * (1.0/math.sqrt(k.size(-1)))   # (B,nh,T,T_past+T)
+        # The new queries sit at absolute positions T_past .. T_past+T-1, so we only need those rows of the mask;
+        # the earlier rows belong to cached tokens. The keys cover every position so far, so we keep T_past+T columns.
+        # With T_past == 0 (no cache) this reduces to the usual [:T,:T] slice.
+        att = att.masked_fill(self.bias[:,:,T_past:T+T_past,:T+T_past]==0,float('-inf')) 
         att = F.softmax(att,dim=-1)
         y = att @ v # (B,nh,T,T) X (B,nh,T,hs) -> B,nh,T,hs
         y = y.transpose(1,2).contiguous().view(B,T,C)
@@ -62,8 +103,8 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self,x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self,x,layer_cache=None):
+        x = x + self.attn(self.ln_1(x),layer_cache)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -89,18 +130,26 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd,config.vocab_size,bias=False)
 
-    def forward(self,idx):
-        # idx is shape (B,T)
+        # weight tying: the token embedding and the output classifier share one (vocab,n_embd) matrix
+        self.transformer.wte.weight = self.lm_head.weight
+
+    def new_kv_cache(self):
+        return KVCache(self.config.n_layer)
+
+    def forward(self,idx,kv_cache=None):
+        # idx is shape (B,T): with a cache, only the NEW tokens (the cache already holds the earlier ones)
         B,T = idx.size()
-        assert T <= self.config.block_size
-        # forward pos and token embeddings 
-        pos = torch.arange(0,T,dtype=torch.long,device=idx.device)
+        T_past = 0 if kv_cache is None else kv_cache.seq_len()
+        assert T_past + T <= self.config.block_size
+        # forward pos and token embeddings
+        # positions continue from where the cache left off: a new token's position is NOT 0
+        pos = torch.arange(T_past,T_past+T,dtype=torch.long,device=idx.device)
         pos_emb = self.transformer.wpe(pos)
         tok_emb = self.transformer.wte(idx)
         x = tok_emb + pos_emb
-        # forward the blocks of the tranformer 
-        for block in self.transformer.h:
-            x = block(x)
+        # forward the blocks of the tranformer
+        for i, block in enumerate(self.transformer.h):
+            x = block(x, None if kv_cache is None else kv_cache.layers[i])
         # forward the final layernorm and the classifier 
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) 
@@ -115,12 +164,23 @@ class GPT(nn.Module):
         return self(x[:, -self.config.block_size:])[:, -1, :]
 
     @torch.no_grad()
-    def greedy_search(self, idx, max_new_tokens=50, eos_token_id=None):
+    def greedy_search(self, idx, max_new_tokens=50, eos_token_id=None, use_cache=True):
         # always take the single most likely next token (deterministic)
         assert idx.size(0) == 1
+        cache = None
+        if use_cache:
+            cache = self.new_kv_cache()
+            # the cache stores absolute positions, so it can't slide past block_size: stop there
+            max_new_tokens = min(max_new_tokens, self.config.block_size - idx.size(1))
+        inp = idx   # what we feed the model this step: the whole prompt first (prefill), then 1 token (decode)
         for _ in range(max_new_tokens):
-            next_tok = self._next_logits(idx).argmax(dim=-1, keepdim=True)  # (1,1)
-            idx = torch.cat((idx, next_tok), dim=1)
+            if use_cache:
+                logits = self(inp, kv_cache=cache)[:, -1, :]    # last position only -> (1,vocab)
+            else:
+                logits = self._next_logits(idx)                 # recompute the whole sequence every step
+            next_tok = logits.argmax(dim=-1, keepdim=True)      # (1,1)
+            idx = torch.cat((idx, next_tok), dim=1)             # idx always holds the full sequence
+            inp = next_tok                                      # with a cache, the next step needs only this
             if eos_token_id is not None and next_tok.item() == eos_token_id:
                 break
         return idx
@@ -315,8 +375,7 @@ class GenStats:
         print(f"forward passes: {len(t)} | first (prompt, time-to-first-token): {t[0] * 1000:.1f} ms")
         if len(t) > 1:
             later = t[1:]
-            print(f"later passes: mean {sum(later) / len(later) * 1000:.1f} ms | last {t[-1] * 1000:.1f} ms "
-                  f"(no KV cache, so each pass re-processes the whole sequence)")
+            print(f"later passes: mean {sum(later) / len(later) * 1000:.1f} ms | last {t[-1] * 1000:.1f} ms")
         if self.device.type == "mps":
             print(f"memory: weights {mb(self.weights_mem)} | peak during generation ~{mb(self.peak_mem)} | "
                   f"driver total {mb(torch.mps.driver_allocated_memory())} / recommended max {mb(torch.mps.recommended_max_memory())}")

@@ -11,6 +11,9 @@ report performance stats on Apple Silicon (MPS), and be checked against Hugging 
 |---|---|
 | `gpt2.py` | the model (`CausalSelfAttention`, `MLP`, `Block`, `GPT`), `GPT.from_pretrained`, the generation methods, and the command-line generator |
 | `test_gpt2_parity.py` | parity tests of this model against Hugging Face `GPT2LMHeadModel` |
+| `test_kv_cache.py` | KV cache correctness tests (tiny random model, about a second) |
+| `bench.py` | repeatable MPS benchmark; saves the median stats of several runs per strategy to `results/<label>.json` |
+| `results/` | saved benchmark results (`before_tying.json`, `tied.json`, `kv_greedy.json`) |
 
 ## Setup
 
@@ -61,6 +64,15 @@ It does one untimed warm-up pass first (the first MPS run compiles Metal shaders
 
 Timing uses `torch.mps.synchronize()`, because MPS is asynchronous. Peak memory is sampled after each forward pass, so it is approximate. Memory is only reported on MPS.
 
+### Benchmark (`bench.py`)
+
+```bash
+python bench.py my_label           # four strategies; writes results/my_label.json
+python bench.py my_label kv        # greedy with vs without the KV cache at 60/200/800 tokens
+```
+
+It runs greedy, beam (4 beams), top-k and top-p on a fixed prompt on MPS, 5 runs each, and saves the median tokens/sec, ms/token, time-to-first-token, mean later-pass time, and weights and peak memory, plus the parameter count, whether the weights are tied, the torch version and the git commit. Use it to compare before and after a change.
+
 ### Using the generation methods from Python
 
 Importing `gpt2` no longer runs anything, so you can use the model directly. Each method takes one prompt of shape `(1, T)` and returns the full sequence of shape `(1, T + new_tokens)`:
@@ -83,13 +95,28 @@ print(enc.decode(out[0].tolist()))
 
 All methods accept `eos_token_id` (for example `50256`) to stop at end-of-text. Call `torch.manual_seed(...)` first if you want repeatable sampling.
 
-There is no KV cache, so each step re-runs the whole sequence.
+### KV cache
+
+`greedy_search` uses a KV cache by default. Each layer stores the keys and values of every token processed so far, so each decode step pushes only the newest token through the model instead of the whole sequence.
+
+```python
+model.greedy_search(ids, max_new_tokens=100)                    # cached (default)
+model.greedy_search(ids, max_new_tokens=100, use_cache=False)   # old path, recomputes everything
+logits = model(new_tokens, kv_cache=cache)                      # low level: cache = model.new_kv_cache()
+```
+
+How it works:
+- **Prefill:** the first call feeds the whole prompt with an empty cache. **Decode:** every later call feeds only the one token just chosen. The same `forward` handles both.
+- With a cache, `forward` takes only the new tokens. Position embeddings start at the number of cached tokens, and the causal mask uses rows `T_past : T_past + T` and columns `: T_past + T`.
+- The cache stores absolute positions, so cached generation stops at `block_size` (1024 total tokens) instead of sliding a window.
+- The cache is used for greedy search only. Top-k, top-p and beam search still recompute the whole sequence each step.
 
 ## Tests
 
 The parity tests compare this model with Hugging Face's GPT-2 on CPU, in float32:
 
 ```bash
+python -m pytest test_kv_cache.py -q  # KV cache tests only (about a second)
 python test_gpt2_parity.py            # prints a summary table
 python test_gpt2_parity.py --debug    # also runs the layer-by-layer comparison
 pytest test_gpt2_parity.py -q
@@ -102,23 +129,23 @@ pytest test_gpt2_parity.py -q
 | greedy generation | `greedy_search` gives the same 50 tokens as Hugging Face `generate(do_sample=False)` |
 | params and tying | the parameter count equals Hugging Face's, and `lm_head` is tied to `wte` |
 
+`test_kv_cache.py` checks that logits computed through the cache (whole prompt, one token at a time, and mixed chunk sizes) equal a full forward pass, that cached greedy output equals uncached output token for token, and that cached generation stops at `block_size`.
+
 The test file runs only the part of `gpt2.py` above the `################### SAMPLING` comment, so keep that comment line in the file.
 
 ## Results
 
-These come from one-off runs on an Apple Silicon Mac. They were not saved to a file, so treat them as rough.
+Measured on an Apple Silicon Mac with MPS. The benchmark numbers are saved in `results/`. Timings vary by a few tokens/sec between runs, so differences of a few percent are noise.
 
-**Parity tests** (as of the last run)
+**Parity tests** (all pass; the tie check passes since the weight-tying fix)
 
 | test | max abs diff | result |
 |---|---|---|
 | logits: 1 token | 2.6e-4 | pass |
 | logits: short sentence, ~200 tokens, batch of 2, 1024 tokens | 0 | pass |
 | greedy generation | – | pass |
-| param count equal | – | fail: 163,037,184 vs Hugging Face's 124,439,808 |
-| `lm_head` tied to `wte` | – | fail |
-
-The two failures have one cause: `GPT.__init__` does not tie `lm_head.weight` to `transformer.wte.weight`, so the output matrix is counted twice. The logits match anyway, because `from_pretrained` copies the same values into both.
+| param count equal | – | pass: 124,439,808 vs Hugging Face's 124,439,808 |
+| `lm_head` tied to `wte` | – | pass |
 
 **Generation checks** (prompt `"Hello, I'm a language model,"`)
 
@@ -126,18 +153,37 @@ The two failures have one cause: `GPT.__init__` does not tie `lm_head.weight` to
 - `beam_search` with 4 beams matches Hugging Face's 4-beam output exactly, and with 1 beam it equals greedy.
 - `top_k_sampling` with `k=1` and `top_p_sampling` with `p` near 0 both reduce to greedy.
 
-**`--stats` on MPS and CPU**
+**Weight tying fix.** `GPT.__init__` now sets `self.transformer.wte.weight = self.lm_head.weight`. Before the fix the model had 163,037,184 parameters, because the 50257×768 matrix was stored twice. Now it has 124,439,808, the same as Hugging Face. The tie survives `.to('mps')`, and a backward pass gives one shared gradient tensor.
 
-| run | tokens/s | ms/token | time-to-first-token | memory |
+**Benchmark baseline** (`results/before_tying.json` vs `results/tied.json`; median of 5 runs; tokens/sec, higher is better)
+
+| strategy | new tokens | tokens/s before tying | tokens/s tied | weights before | weights tied | peak before | peak tied |
+|---|---|---|---|---|---|---|---|
+| greedy | 60 | 42.9 | 47.9 | 671 MB | 523 MB | 684 MB | 536 MB |
+| beam (4 beams) | 40 | 29.9 | 30.2 | 671 MB | 523 MB | 710 MB | 562 MB |
+| top-k (k=50) | 60 | 48.1 | 47.3 | 671 MB | 523 MB | 685 MB | 537 MB |
+| top-p (p=0.9) | 60 | 45.5 | 45.4 | 671 MB | 523 MB | 685 MB | 537 MB |
+
+- Tying saves 148 MB of weight memory (38.6M parameters at 4 bytes each). Speed is unchanged within noise.
+- These runs are from before the KV cache existed. Time-to-first-token is about 13 ms (20 ms for beam), and later passes are about 21 ms (31 ms for beam).
+- Beam search is about 1.5× slower per token than greedy, not 4×, even though it processes 4× the data.
+- Memory use is about 0.5 GB, against the 12 GB macOS recommends.
+- CPU was not part of the saved baseline. In one earlier run, greedy on CPU was about 26 tokens/s, so MPS was roughly 1.7× faster at this size.
+
+**KV cache, greedy search** (`results/kv_greedy.json`; median of 3 runs; MPS)
+
+| new tokens | uncached | cached | speedup | peak memory (uncached → cached) |
 |---|---|---|---|---|
-| greedy, MPS, 60 tokens | 44.8 | 22.3 | 26 ms | weights 671 MB, peak about 684 MB |
-| beam (4 beams), MPS, 40 tokens | 21.6 | 46.2 | 22 ms | peak about 710 MB |
-| greedy, CPU, 20 tokens | 25.9 | 38.5 | 11.6 ms | not reported |
+| 60 | 45.9 tok/s (21.8 ms/token) | 89.8 tok/s (11.1 ms/token) | 1.96× | 549 → 529 MB |
+| 200 | 30.8 tok/s (32.5 ms/token) | 81.3 tok/s (12.3 ms/token) | 2.65× | 603 → 538 MB |
+| 800 | 3.2 tok/s (314.9 ms/token) | 63.3 tok/s (15.8 ms/token) | 19.9× | 835 → 586 MB |
 
-At these short lengths, later passes are about as fast as the first (about 22 ms), so per-step time is dominated by fixed GPU overhead, not sequence length. The cost of having no KV cache would only show up at several hundred tokens.
+- Uncached cost per token climbs steeply with length (22 → 33 → 315 ms), because every step re-processes the whole sequence. Cached cost per token is nearly flat (11 → 12 → 16 ms).
+- The cache itself costs about 63 MB at 808 tokens, in line with the estimate of about 72 KB per token for GPT-2 124M in float32.
+- Peak memory is sampled after each forward pass, so it is approximate.
 
 ## Known gaps
 
-- `lm_head` and `wte` are not weight-tied yet (see Results).
 - No training loop, data loading or loss yet. `GPT.forward` returns logits only.
-- No KV cache.
+- The KV cache is used for greedy search only. Top-k, top-p and beam search don't use it yet. Beam search will also need the cache rows reordered whenever beams are reshuffled.
+- Beam search calls `.item()` for each candidate at every step, which forces a GPU sync. It is a possible speed-up, and `bench.py` can measure it.
