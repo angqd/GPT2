@@ -155,64 +155,92 @@ class GPT(nn.Module):
         logits = self.lm_head(x) 
         return logits
 
-    # ---------------- generation (single prompt idx of shape (1,T) -> (1,T+new)) ----------------
-    # no KV cache: every step re-runs the full forward pass over the sequence so far
+    # ---------------- generation: idx of shape (B,T) -> (B,T+new) ----------------
+    # greedy, top-k and top-p take a batch of B prompts of the SAME length T (no padding support) and use the KV cache
+    # by default; use_cache=False re-runs the full forward pass over the sequence so far at every step.
+    # beam search still takes a single prompt (1,T) and has no cache yet.
 
     def _next_logits(self, x):
         # logits for the next token of every row in x (B,T) -> (B,vocab_size)
         # crop to the last block_size tokens so long generations don't overflow wpe
         return self(x[:, -self.config.block_size:])[:, -1, :]
 
+    def _setup_decode(self, idx, max_new_tokens, use_cache):
+        # shared by greedy / top-k / top-p: build the cache (or None) and cap the length when a cache is used
+        if not use_cache:
+            return None, max_new_tokens
+        # the cache stores absolute positions, so it can't slide past block_size: stop there
+        return self.new_kv_cache(), min(max_new_tokens, self.config.block_size - idx.size(1))
+
+    def _step_logits(self, idx, inp, cache):
+        # logits for the next token of every row -> (B,vocab_size)
+        # inp is what we feed the model this step: the whole prompt first (prefill), then only the 1 new token (decode)
+        if cache is None:
+            return self._next_logits(idx)                        # recompute the whole sequence every step
+        return self(inp, kv_cache=cache)[:, -1, :]               # last position only
+
+    @staticmethod
+    def _apply_eos(next_tok, done, eos_token_id):
+        # next_tok (B,1), done (B,) bool: rows that already hit EOS keep emitting EOS (as padding) so the batch stays
+        # rectangular, and a row becomes done the moment it emits EOS. With B=1 this is the usual "stop at EOS".
+        if eos_token_id is None:
+            return next_tok, done
+        next_tok = torch.where(done[:, None], torch.full_like(next_tok, eos_token_id), next_tok)
+        return next_tok, done | (next_tok.squeeze(1) == eos_token_id)
+
     @torch.no_grad()
     def greedy_search(self, idx, max_new_tokens=50, eos_token_id=None, use_cache=True):
-        # always take the single most likely next token (deterministic)
-        assert idx.size(0) == 1
-        cache = None
-        if use_cache:
-            cache = self.new_kv_cache()
-            # the cache stores absolute positions, so it can't slide past block_size: stop there
-            max_new_tokens = min(max_new_tokens, self.config.block_size - idx.size(1))
-        inp = idx   # what we feed the model this step: the whole prompt first (prefill), then 1 token (decode)
+        # always take the single most likely next token (deterministic); works on a batch of equal-length prompts
+        cache, max_new_tokens = self._setup_decode(idx, max_new_tokens, use_cache)
+        done = torch.zeros(idx.size(0), dtype=torch.bool, device=idx.device)
+        inp = idx
         for _ in range(max_new_tokens):
-            if use_cache:
-                logits = self(inp, kv_cache=cache)[:, -1, :]    # last position only -> (1,vocab)
-            else:
-                logits = self._next_logits(idx)                 # recompute the whole sequence every step
-            next_tok = logits.argmax(dim=-1, keepdim=True)      # (1,1)
-            idx = torch.cat((idx, next_tok), dim=1)             # idx always holds the full sequence
+            logits = self._step_logits(idx, inp, cache)         # (B,vocab)
+            next_tok = logits.argmax(dim=-1, keepdim=True)      # (B,1)
+            next_tok, done = self._apply_eos(next_tok, done, eos_token_id)
+            idx = torch.cat((idx, next_tok), dim=1)             # idx always holds the full sequences
             inp = next_tok                                      # with a cache, the next step needs only this
-            if eos_token_id is not None and next_tok.item() == eos_token_id:
+            if eos_token_id is not None and done.all():         # .all() forces a GPU sync, like .item() did
                 break
         return idx
 
     @torch.no_grad()
-    def top_k_sampling(self, idx, max_new_tokens=50, k=50, temperature=1.0, eos_token_id=None):
-        # sample only among the k most likely tokens
-        assert idx.size(0) == 1
+    def top_k_sampling(self, idx, max_new_tokens=50, k=50, temperature=1.0, eos_token_id=None, use_cache=True):
+        # sample only among the k most likely tokens; works on a batch of equal-length prompts (each row sampled separately)
+        cache, max_new_tokens = self._setup_decode(idx, max_new_tokens, use_cache)
+        done = torch.zeros(idx.size(0), dtype=torch.bool, device=idx.device)
+        inp = idx
         for _ in range(max_new_tokens):
-            probs = F.softmax(self._next_logits(idx) / temperature, dim=-1)  # (1,vocab)
-            topk_probs, topk_idx = torch.topk(probs, k, dim=-1)              # (1,k)
+            probs = F.softmax(self._step_logits(idx, inp, cache) / temperature, dim=-1)  # (B,vocab)
+            topk_probs, topk_idx = torch.topk(probs, k, dim=-1)                          # (B,k)
             # multinomial renormalises the k probabilities for us
-            next_tok = torch.gather(topk_idx, -1, torch.multinomial(topk_probs, 1))
+            next_tok = torch.gather(topk_idx, -1, torch.multinomial(topk_probs, 1))      # (B,1)
+            next_tok, done = self._apply_eos(next_tok, done, eos_token_id)
             idx = torch.cat((idx, next_tok), dim=1)
-            if eos_token_id is not None and next_tok.item() == eos_token_id:
+            inp = next_tok
+            if eos_token_id is not None and done.all():
                 break
         return idx
 
     @torch.no_grad()
-    def top_p_sampling(self, idx, max_new_tokens=50, p=0.9, temperature=1.0, eos_token_id=None):
+    def top_p_sampling(self, idx, max_new_tokens=50, p=0.9, temperature=1.0, eos_token_id=None, use_cache=True):
         # nucleus sampling: sample from the smallest set of tokens whose cumulative prob >= p
-        assert idx.size(0) == 1
+        # works on a batch of equal-length prompts (each row sampled separately)
+        cache, max_new_tokens = self._setup_decode(idx, max_new_tokens, use_cache)
+        done = torch.zeros(idx.size(0), dtype=torch.bool, device=idx.device)
+        inp = idx
         for _ in range(max_new_tokens):
-            probs = F.softmax(self._next_logits(idx) / temperature, dim=-1)
+            probs = F.softmax(self._step_logits(idx, inp, cache) / temperature, dim=-1)  # (B,vocab)
             sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
             cum = torch.cumsum(sorted_probs, dim=-1)
             # drop a token if the tokens ranked above it already cover p
             # (cum - own prob), so the first token that crosses p is kept and rank 0 is always kept
             sorted_probs[(cum - sorted_probs) >= p] = 0.0
-            next_tok = torch.gather(sorted_idx, -1, torch.multinomial(sorted_probs, 1))
+            next_tok = torch.gather(sorted_idx, -1, torch.multinomial(sorted_probs, 1))  # (B,1)
+            next_tok, done = self._apply_eos(next_tok, done, eos_token_id)
             idx = torch.cat((idx, next_tok), dim=1)
-            if eos_token_id is not None and next_tok.item() == eos_token_id:
+            inp = next_tok
+            if eos_token_id is not None and done.all():
                 break
         return idx
 

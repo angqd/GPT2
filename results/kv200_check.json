@@ -1,0 +1,65 @@
+{
+  "info": {
+    "label": "kv200_check",
+    "date": "2026-11-24 15:27",
+    "torch": "2.15.0",
+    "machine": "arm64",
+    "loadavg_at_start": [
+      3.66,
+      2.86,
+      2.57
+    ],
+    "prompt": "Hello, I'm a language model,",
+    "runs_per_case": 5,
+    "case_set": "kv200",
+    "commit": "b8633af",
+    "n_params": 124439808,
+    "tied": true
+  },
+  "results": {
+    "greedy_uncached_200": {
+      "tokens_per_s": 30.11,
+      "ms_per_token": 33.21,
+      "ttft_ms": 14.35,
+      "later_mean_ms": 33.0,
+      "weights_mb": 523.46,
+      "peak_mb": 603.47,
+      "new_tokens": 200,
+      "batch": 1,
+      "warm_pass_s": 6.97,
+      "ms_per_token_runs": [
+        33.01,
+        33.43,
+        33.21,
+        33.2,
+        33.39
+      ],
+      "ms_per_token_min_max": [
+        33.01,
+        33.43
+      ]
+    },
+    "greedy_cached_200": {
+      "tokens_per_s": 80.76,
+      "ms_per_token": 12.38,
+      "ttft_ms": 14.51,
+      "later_mean_ms": 12.07,
+      "weights_mb": 523.46,
+      "peak_mb": 538.4,
+      "new_tokens": 200,
+      "batch": 1,
+      "warm_pass_s": 2.28,
+      "ms_per_token_runs": [
+        12.37,
+        12.38,
+        12.07,
+        12.9,
+        12.54
+      ],
+      "ms_per_token_min_max": [
+        12.07,
+        12.9
+      ]
+    }
+  }
+}

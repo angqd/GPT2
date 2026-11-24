@@ -1,0 +1,81 @@
+{
+  "info": {
+    "label": "batch",
+    "date": "2026-11-24 14:43",
+    "torch": "2.15.0",
+    "machine": "arm64",
+    "loadavg_at_start": [
+      1.97,
+      2.17,
+      2.38
+    ],
+    "prompt": "Hello, I'm a language model,",
+    "runs_per_case": 3,
+    "case_set": "batch",
+    "commit": "b8633af",
+    "n_params": 124439808,
+    "tied": true
+  },
+  "results": {
+    "greedy_b1": {
+      "tokens_per_s": 90.39,
+      "ms_per_token": 11.06,
+      "ttft_ms": 13.05,
+      "later_mean_ms": 10.77,
+      "weights_mb": 523.46,
+      "peak_mb": 531.37,
+      "new_tokens": 100,
+      "batch": 1
+    },
+    "greedy_b2": {
+      "tokens_per_s": 144.61,
+      "ms_per_token": 13.83,
+      "ttft_ms": 16.43,
+      "later_mean_ms": 13.54,
+      "weights_mb": 523.46,
+      "peak_mb": 539.28,
+      "new_tokens": 100,
+      "batch": 2
+    },
+    "greedy_b4": {
+      "tokens_per_s": 264.8,
+      "ms_per_token": 15.11,
+      "ttft_ms": 17.78,
+      "later_mean_ms": 14.81,
+      "weights_mb": 523.46,
+      "peak_mb": 556.03,
+      "new_tokens": 100,
+      "batch": 4
+    },
+    "greedy_b8": {
+      "tokens_per_s": 441.94,
+      "ms_per_token": 18.1,
+      "ttft_ms": 20.51,
+      "later_mean_ms": 17.79,
+      "weights_mb": 523.46,
+      "peak_mb": 588.69,
+      "new_tokens": 100,
+      "batch": 8
+    },
+    "greedy_b16": {
+      "tokens_per_s": 675.0,
+      "ms_per_token": 23.7,
+      "ttft_ms": 28.42,
+      "later_mean_ms": 23.31,
+      "weights_mb": 523.46,
+      "peak_mb": 652.98,
+      "new_tokens": 100,
+      "batch": 16
+    },
+    "greedy_b32": {
+      "tokens_per_s": 1028.5,
+      "ms_per_token": 31.11,
+      "ttft_ms": 51.03,
+      "later_mean_ms": 30.28,
+      "weights_mb": 523.47,
+      "peak_mb": 781.99,
+      "new_tokens": 100,
+      "batch": 32
+    }
+  }
+}

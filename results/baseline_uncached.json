@@ -1,0 +1,61 @@
+{
+  "info": {
+    "label": "baseline_uncached",
+    "date": "2026-11-24 14:42",
+    "torch": "2.15.0",
+    "machine": "arm64",
+    "loadavg_at_start": [
+      1.87,
+      2.22,
+      2.42
+    ],
+    "prompt": "Hello, I'm a language model,",
+    "runs_per_case": 5,
+    "case_set": "strategies_uncached",
+    "commit": "b8633af",
+    "n_params": 124439808,
+    "tied": true
+  },
+  "results": {
+    "greedy": {
+      "tokens_per_s": 49.64,
+      "ms_per_token": 20.14,
+      "ttft_ms": 12.99,
+      "later_mean_ms": 20.0,
+      "weights_mb": 523.46,
+      "peak_mb": 549.21,
+      "new_tokens": 60,
+      "batch": 1
+    },
+    "beam4": {
+      "tokens_per_s": 31.39,
+      "ms_per_token": 31.86,
+      "ttft_ms": 19.55,
+      "later_mean_ms": 29.91,
+      "weights_mb": 523.46,
+      "peak_mb": 562.0,
+      "new_tokens": 40,
+      "batch": 1
+    },
+    "top_k": {
+      "tokens_per_s": 48.31,
+      "ms_per_token": 20.7,
+      "ttft_ms": 13.89,
+      "later_mean_ms": 20.23,
+      "weights_mb": 523.46,
+      "peak_mb": 536.66,
+      "new_tokens": 60,
+      "batch": 1
+    },
+    "top_p": {
+      "tokens_per_s": 47.8,
+      "ms_per_token": 20.92,
+      "ttft_ms": 14.17,
+      "later_mean_ms": 20.34,
+      "weights_mb": 523.46,
+      "peak_mb": 537.42,
+      "new_tokens": 60,
+      "batch": 1
+    }
+  }
+}
